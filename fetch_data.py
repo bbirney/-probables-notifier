@@ -8,38 +8,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta, date
 from dotenv import load_dotenv
 
-def create_delta_table_old(records, table_title):
-    # Group records by GameDate (stored in index 5 of each tuple)
-    records_by_date = defaultdict(list)
-    for record in records:
-        records_by_date[record[5]].append(record)
-
-    # Variable to hold all tables
-    all_tables_html = ""
-
-    # Generate a separate table for each GameDate
-    for game_date, records in sorted(records_by_date.items()):
-        # Parse the game_date to obtain the date and day name
-        date_object = datetime.strptime(game_date, '%Y-%m-%dT%H:%M:%S')
-        formatted_date = date_object.strftime('%Y-%m-%d')
-        day_name = date_object.strftime('%A')
-
-        # Update the HTML string to include day of the week
-        html = f"<h2>{table_title} - {formatted_date} ({day_name})</h2>"
-        html += "<table border='1'><tr><th>Name</th><th>Team</th><th>Opponent</th></tr>"
-
-        for record in records:
-            teamSPPlayerName = record[13]  # Index of teamSPPlayerName
-            abbName = record[4]           # Index of AbbName
-            opponentAbbName = record[11]  # Index of OpponentAbbName
-            html += f"<tr><td>{teamSPPlayerName}</td><td>{abbName}</td><td>{'' if record[9] == 1 else '@'}{opponentAbbName}</td></tr>"
-
-        html += "</table>"
-        all_tables_html += html + "<br>"  # Add a line break between tables for better spacing
-
-    return all_tables_html
-
-# Division mapping
+MANUAL_RUN = '-m' in sys.argv
 DIVISIONS = {
     'AL East': ['BAL', 'BOS', 'NYY', 'TBR', 'TOR'],
     'AL Central': ['CHW', 'CLE', 'DET', 'KCR', 'MIN'],
@@ -48,6 +17,20 @@ DIVISIONS = {
     'NL Central': ['CHC', 'CIN', 'MIL', 'PIT', 'STL'],
     'NL West': ['ARI', 'COL', 'LAD', 'SDP', 'SFG']
 }
+
+def days_are_within(date_1, date_2, days):
+    # Calculate the absolute difference between the two dates
+    delta = abs(date_1 - date_2)
+    
+    # Check if the difference in days is less than or equal to the specified number of days
+    return delta.days < days
+
+def is_before_today(check_date):
+    # Get the current date with the time set to 00:00:00 for accurate comparison
+    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    
+    # Compare the given datetime to today's date
+    return check_date < today
 
 def create_division_tables(records):
     team_division = {}
@@ -60,9 +43,13 @@ def create_division_tables(records):
         team = record[4]
         division_records[team_division[team]].append(record)
 
+    # sort by key (division)
+    division_records = dict(sorted(division_records.items()))
+    
     html_output = ""
     for division, division_records in division_records.items():
         html_output += create_probables_table(division_records, division)
+
     return html_output
 
 def create_probables_table(records, table_title):
@@ -71,7 +58,7 @@ def create_probables_table(records, table_title):
 
     # Populate the dictionary with records data
     for record in records:
-        date_key = datetime.strptime(record[5], '%Y-%m-%dT%H:%M:%S').strftime('%A<br>%Y-%m-%d')
+        date_key = datetime.strptime(record[5], '%Y-%m-%dT%H:%M:%S').strftime('%Y-%m-%d<br>%A')
         team_key = record[4]
         opponent = record[11]
         player_name = record[13]
@@ -87,11 +74,14 @@ def create_probables_table(records, table_title):
     dates_sorted = sorted(set(date for team in team_date_details.values() for date in team.keys()))
     html += "<tr><th></th>" + "".join(f"<th>{date}</th>" for date in dates_sorted) + "</tr>"
 
+    # sort by key (team)
+    team_date_details = dict(sorted(team_date_details.items()))
+
     # Fill the table rows for each team
     for team, dates in team_date_details.items():
         html += f"<tr><td><b>{team}</b></td>"
         for date in dates_sorted:
-            details = ",".join(dates[date]) if date in dates else ""
+            details = "<hr>".join(dates[date]) if date in dates else ""
             html += f"<td>{details}</td>"
         html += "</tr>"
 
@@ -114,6 +104,8 @@ def create_delta_table(records, table_title):
         table_style = "background-color: #ccffcc;"  # Light green
     elif "deleted" in table_title.lower():
         table_style = "background-color: #ffcccc;"  # Light red
+    elif "moved" in table_title.lower():
+        table_style = "background-color: #e6e6fa;" # Light purple
     else:
         table_style = ""
 
@@ -129,13 +121,62 @@ def create_delta_table(records, table_title):
         html += f"<table border='1' style='{table_style}'><tr><th>Name</th><th>Team</th><th>Opponent</th></tr>"
 
         for record in records:
-            teamSPPlayerName = record[13]  # Index of teamSPPlayerName
+            teamSPPlayerName = '' if record[13] == 'None' else record[13]  # Index of teamSPPlayerName (None -> empty str)
             abbName = record[4]           # Index of AbbName
             opponentAbbName = record[11]  # Index of OpponentAbbName
             html += f"<tr><td>{teamSPPlayerName}</td><td>{abbName}</td><td>{'' if record[9] == 1 else '@'}{opponentAbbName}</td></tr>"
 
         html += "</table>"
         all_tables_html += html + "<br>"  # Add a line break between tables for better spacing
+
+    return all_tables_html
+
+def create_moved_table(old_records, new_records, table_title):
+    # Create dictionaries to map player IDs to their records for quick lookup
+    old_dict = {rec[12]: rec for rec in old_records}  # Assuming the player ID is in index 0
+    new_dict = {rec[12]: rec for rec in new_records}
+
+    all_tables_html = ""
+    table_style = "background-color: #e6e6fa;"  # Light purple
+
+    moved_players = []        
+
+    # Determine which players have moved
+    for player_id in new_dict.keys():
+        if player_id not in old_dict:
+            continue
+        date_1 = datetime.strptime(old_dict[player_id][5], '%Y-%m-%dT%H:%M:%S')
+        date_2 = datetime.strptime(new_dict[player_id][5], '%Y-%m-%dT%H:%M:%S')
+        if date_1 != date_2 and days_are_within(date_1, date_2, 5):
+            moved_players.append(player_id)
+
+    # Generate HTML for moved players
+    html = f"<h2>{table_title}</h2>"
+    html += f"<table border='1' style='{table_style}'>"
+    html += "<tr><th>Name</th><th>Team</th><th>Old GameDate</th><th>Old Opponent</th><th>New GameDate</th><th>New Opponent</th></tr>"
+    
+    count = 0
+    for player_id in moved_players:
+        old_rec = old_dict[player_id]
+        new_rec = new_dict[player_id]
+
+        count = count + 1
+
+        # Assuming name index 1, team index 2, game date index 3, and opponent index 4
+        name = old_rec[13]
+        team = old_rec[4]
+        old_game_date = old_rec[5]
+        old_opponent = old_rec[11]
+        new_game_date = "N/A" if old_rec[5] == new_rec[5] else new_rec[5]
+        new_opponent = "N/A" if old_rec[11] == new_rec[11] else new_rec[11]
+        
+        html += f"<tr><td>{name}</td><td>{team}</td><td>{old_game_date}</td><td>{old_opponent}</td><td>{new_game_date}</td><td>{new_opponent}</td></tr>"
+
+    html += "</table>"
+    all_tables_html += html + "<br>"
+
+    if count == 0:
+        all_tables_html = ""
 
     return all_tables_html
 
@@ -191,6 +232,7 @@ def fetch_data_db(cursor):
           FROM game_info
          WHERE date(GameDate) >= date('{(datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')}') /* yesterday */
            AND date(GameDate) <= date('{(datetime.now() + timedelta(days=10)).strftime('%Y-%m-%d')}') /* 10 days from now */
+         ORDER BY GameDate DESC, dh ASC
     '''
     return set(cursor.execute(query).fetchall())
 
@@ -234,8 +276,6 @@ def send_email(html_content, subject):
 
 if __name__ == "__main__":
 
-    MANUAL_RUN = '-m' in sys.argv
-
     load_dotenv()
 
     # Establish connection to the SQLite database
@@ -258,11 +298,38 @@ if __name__ == "__main__":
     conn.close()
 
     # Calculate delta and generate HTML tables
-    added_records = new_records - existing_records
-    deleted_records = existing_records - new_records
+    # added_records = new_records - existing_records
+    # deleted_records = existing_records - new_records
+
+    added_records = []
+    deleted_records = []
+    moved_records = []
+
+    # Convert lists to dictionaries for faster lookup by teamSPPlayerId
+    existing_dict = {record[12]: record for record in existing_records}
+    new_dict = {record[12]: record for record in new_records}
+
+    # Check for added and moved records
+    for player_id, new_record in new_dict.items():
+        if player_id not in existing_dict:
+            date_object = datetime.strptime(new_record[5], '%Y-%m-%dT%H:%M:%S')
+            if is_before_today(date_object):
+                continue
+            added_records.append(new_record)
+            continue
+        
+    # Check for deleted records
+    for player_id in existing_dict:
+        if player_id not in new_dict:
+            date_object = datetime.strptime(existing_dict[player_id][5], '%Y-%m-%dT%H:%M:%S')
+            if is_before_today(date_object):
+                continue
+            deleted_records.append(existing_dict[player_id])
+
     new_html = create_division_tables(new_records)
     added_html = create_delta_table(added_records, "Added")
     deleted_html = create_delta_table(deleted_records, "Deleted")
+    moved_html = create_moved_table(new_records, existing_records, "Moved")
 
     # Get the current time
     current_time = datetime.now().time()
@@ -272,6 +339,6 @@ if __name__ == "__main__":
     delta = rightTime or len(added_records) > 0 or len(deleted_records) > 0
 
     if delta or rightTime:
-        send_email(new_html + "<hr>" + added_html + "<hr>" + deleted_html, ("Probables Update" if delta else "Probables Report"))
+        send_email("<hr>".join(s for s in [ new_html, moved_html, added_html, deleted_html ] if s), ("Probables Update" if delta else "Probables Report"))
 
     print("Probables updated" + (" and email sent successfully." if delta or rightTime else ""))
