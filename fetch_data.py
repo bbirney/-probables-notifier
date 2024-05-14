@@ -264,7 +264,7 @@ def upsert_data(cursor, data):
 def send_email(html_content, subject):
     # Prepare to send the email
     emailAddress = os.getenv('PROBABLES_EMAIL_ADDRESS')
-
+    print(f"send email to {emailAddress}")
     # Register your OAuth credentials (only needed once)
     yag = yagmail.SMTP(emailAddress, oauth2_file="credentials.json")
     
